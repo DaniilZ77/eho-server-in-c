@@ -202,6 +202,19 @@ void shutdown(FILE* fifo, char* fifo_name, FILE* out) {
     if (unlink(fifo_name) != 0) exit(1);
 }
 
+void init_demon_out(struct config* cfg, FILE** out) {
+    if (cfg->out == NULL) {
+        perror("demon mode requires -out flag\n");
+        exit(1);
+    }
+    *out = fopen(cfg->out, "a");
+    if (*out == NULL) {
+        perror("failed to open out\n");
+        exit(1);
+    }
+    create_demon(*out);
+}
+
 int main(int argc, char* argv[]) {
     struct config* cfg = read_config(argc, argv);
     if (cfg == NULL) exit(1);
@@ -211,15 +224,7 @@ int main(int argc, char* argv[]) {
 
     FILE* out = NULL;
     if (cfg->type == demon) {
-        if (cfg->out == NULL) {
-            perror("demon mode requires -out flag\n");
-            exit(1);
-        }
-        out = fopen(cfg->out, "a");
-        if (out == NULL) {
-            perror("failed to open out\n");
-            exit(1);
-        }
+        init_demon_out(cfg, &out);
         create_demon(out);
     } else out = stdout;
 
@@ -270,15 +275,7 @@ int main(int argc, char* argv[]) {
                 app_status = 0;
             } else if (app_status == 5) {
                 if (cfg->type != demon) {
-                    if (cfg->out == NULL) {
-                        perror("demon mode requires -out flag\n");
-                        exit(1);
-                    }
-                    out = fopen(cfg->out, "a");
-                    if (out == NULL) {
-                        perror("failed to open out\n");
-                        exit(1);
-                    }
+                    init_demon_out(cfg, &out);
                     create_demon(out);
                     cfg->type = demon;
                 }
@@ -309,15 +306,7 @@ int main(int argc, char* argv[]) {
                 app_status = 0;
             } else if (app_status == 5) {
                 if (cfg->type != demon) {
-                    if (cfg->out == NULL) {
-                        perror("demon mode requires -out flag\n");
-                        exit(1);
-                    }
-                    out = fopen(cfg->out, "a");
-                    if (out == NULL) {
-                        perror("failed to open out\n");
-                        exit(1);
-                    }
+                    init_demon_out(cfg, &out);
                     create_demon(out);
                     cfg->type = demon;
                 }
