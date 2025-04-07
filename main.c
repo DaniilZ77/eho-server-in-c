@@ -212,7 +212,6 @@ void init_demon_out(struct config* cfg, FILE** out) {
         perror("failed to open out\n");
         exit(1);
     }
-    create_demon(*out);
 }
 
 int main(int argc, char* argv[]) {
