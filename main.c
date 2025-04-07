@@ -207,11 +207,12 @@ void init_demon_out(struct config* cfg, FILE** out) {
         perror("demon mode requires -out flag\n");
         exit(1);
     }
-    *out = fopen(cfg->out, "a");
+    *out = fopen(cfg->out, "w");
     if (*out == NULL) {
         perror("failed to open out\n");
         exit(1);
     }
+    setbuf(*out, NULL);
 }
 
 int main(int argc, char* argv[]) {
@@ -259,7 +260,6 @@ int main(int argc, char* argv[]) {
 
     alarm(ALARM_PERIOD);
 
-    setbuf(out, NULL);
     print_help(out);
     char buffer[BUFFER_SIZE];
     int n;
@@ -276,6 +276,8 @@ int main(int argc, char* argv[]) {
                 if (cfg->type != demon) {
                     init_demon_out(cfg, &out);
                     create_demon(out);
+                    fprintf(out, "sighup signal: switching to demon mode\n");
+                    print_stats(out);
                     cfg->type = demon;
                 }
                 app_status = 0;
@@ -307,6 +309,8 @@ int main(int argc, char* argv[]) {
                 if (cfg->type != demon) {
                     init_demon_out(cfg, &out);
                     create_demon(out);
+                    fprintf(out, "sighup signal: switching to demon mode\n");
+                    print_stats(out);
                     cfg->type = demon;
                 }
                 app_status = 0;
