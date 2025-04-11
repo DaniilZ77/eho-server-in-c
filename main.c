@@ -167,6 +167,9 @@ void signal_handler(int signal) {
     case SIGHUP:
         app_status = 5;
         break;
+    case SIGQUIT:
+        app_status = 6;
+        break;
     }
 }
 
@@ -281,7 +284,7 @@ int main(int argc, char* argv[]) {
                     cfg->type = demon;
                 }
                 app_status = 0;
-            } else {
+            } else if (app_status != 6) {
                 shutdown(fifo, cfg->fifo_name, out);
                 break;
             }
@@ -314,7 +317,7 @@ int main(int argc, char* argv[]) {
                     cfg->type = demon;
                 }
                 app_status = 0;
-            } else {
+            } else if (app_status != 6) {
                 shutdown(fifo, cfg->fifo_name, out);
                 close_fifo(fifo, out);
                 break;
