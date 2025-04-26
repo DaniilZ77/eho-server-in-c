@@ -9,9 +9,12 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 #define BUFFER_SIZE 4096
 #define ALARM_PERIOD 5
+#define MAX_FIFO_NAME 256
+#define MAX_OUT_NAME 256
 
 int alarm_count = 0;
 int message_count = 0;
@@ -23,32 +26,40 @@ enum type {
 };
 
 struct config {
-    char* fifo_name;
-    char* out;
+    char fifo_name[MAX_FIFO_NAME];
+    char out[MAX_OUT_NAME];
     enum type type;
 };
 
 void print_help(FILE* file) {
-    fprintf(file, "-fifo_name: file name for named pipe\n");
-    fprintf(file, "-type: one of foreground or demon\n");
-    fprintf(file, "-out: output file (required for demon)\n");
+    fprintf(file, "Options:\n");
+    fprintf(file, "\t-fifo_name: file name for named pipe (max size: %d)\n", MAX_FIFO_NAME - 1);
+    fprintf(file, "\t-type: one of foreground or demon\n");
+    fprintf(file, "\t-out: output file (required for demon, max size: %d)\n", MAX_OUT_NAME - 1);
 }
 
-struct config* read_config(int argc, char* argv[]) {
-    struct config* cfg = (struct config*)calloc(0, sizeof(struct config));
+int read_config(struct config* cfg, int argc, char* argv[]) {
+    if (cfg == NULL) {
+        perror("cfg is null\n");
+        return -1;
+    }
+    cfg->fifo_name[0] = '\0';
+    cfg->out[0] = '\0';
     cfg->type = foreground;
 
     int i = 1;
     while (i < argc) {
         if (strcmp("-fifo_name", argv[i]) == 0) {
             if (argc > i + 1) {
-                if (cfg->fifo_name != NULL) free(cfg->fifo_name);
-                cfg->fifo_name = (char*)malloc(sizeof(char) * strlen(argv[i + 1]));
+                if (strlen(argv[i + 1]) >= MAX_FIFO_NAME) {
+                    perror("fifo_name is too long\n");
+                    return -1;
+                }
                 strcpy(cfg->fifo_name, argv[i + 1]);
                 ++i;
             } else {
                 perror("invalid flag: fifo_name\n");
-                return NULL;
+                return -1;
             }
         } else if (strcmp("-type", argv[i]) == 0) {
             if (argc > i + 1) {
@@ -57,27 +68,30 @@ struct config* read_config(int argc, char* argv[]) {
                 ++i;
             } else {
                 perror("invalid flag: type\n");
-                return NULL;
+                return -1;
             }
         } else if (strcmp("-out", argv[i]) == 0) {
             if (argc > i + 1) {
-                if (cfg->out != NULL) free(cfg->out);
-                cfg->out = (char*)malloc(sizeof(char) * strlen(argv[i + 1]));
+                if (strlen(argv[i + 1]) >= MAX_OUT_NAME) {
+                    perror("out is too long\n");
+                    return -1;
+                }
                 strcpy(cfg->out, argv[i + 1]);
                 ++i;
             } else {
                 perror("invalid flag: out\n");
-                return NULL;
+                return -1;
             }
         }
         ++i;
     }
-    return cfg;
-}
 
-void destroy_config(struct config* cfg) {
-    free(cfg->fifo_name);
-    free(cfg);
+    if (cfg->fifo_name[0] == '\0') {
+        perror("fifo_name is required\n");
+        return -1;
+    }
+
+    return 0;
 }
 
 int setup_fifo(char* fifo_name) {
@@ -167,14 +181,11 @@ void signal_handler(int signal) {
     case SIGHUP:
         app_status = 5;
         break;
-    case SIGQUIT:
-        app_status = 6;
-        break;
     }
 }
 
-void close_fifo(FILE* fifo, FILE* out) {
-    if (fclose(fifo) != 0) {
+void close_fifo(int fifo, FILE* out) {
+    if (close(fifo) != 0) {
         fprintf(out, "failed to close fifo: %s\n", strerror(errno));
         exit(1);
     }
@@ -186,27 +197,8 @@ void print_stats(FILE *file) {
     fprintf(file, "alarm count: %d\n", alarm_count);
 }
 
-void shutdown(FILE* fifo, char* fifo_name, FILE* out) {
-    int n;
-    char buffer[BUFFER_SIZE];
-    switch (app_status) {
-    case 1:
-        while (fifo != NULL && (n = fread(buffer, sizeof(char), BUFFER_SIZE, fifo)) > 0) {
-            buffer[n] = '\0';
-            fputs(buffer, out);
-        }
-        fprintf(out, "got sigint\n");
-        break;
-    case 2:
-        fprintf(out, "got sigterm\n");
-        break;
-    }
-    print_stats(out);
-    if (unlink(fifo_name) != 0) exit(1);
-}
-
 void init_demon_out(struct config* cfg, FILE** out) {
-    if (cfg->out == NULL) {
+    if (cfg->out[0] == '\0') {
         perror("demon mode requires -out flag\n");
         exit(1);
     }
@@ -218,24 +210,69 @@ void init_demon_out(struct config* cfg, FILE** out) {
     setbuf(*out, NULL);
 }
 
-int main(int argc, char* argv[]) {
-    struct config* cfg = read_config(argc, argv);
-    if (cfg == NULL) exit(1);
+void demonize(struct config *cfg, FILE* out) {
+    if (cfg->type != demon) {
+        init_demon_out(cfg, &out);
+        create_demon(out);
+        fprintf(out, "sighup signal: switching to demon mode\n");
+        print_stats(out);
+        cfg->type = demon;
+    }
+}
 
-    int fifo_status = setup_fifo(cfg->fifo_name);
+void shutdown(int fifo, char* fifo_name, FILE* out, struct config* cfg) {
+    int n;
+    char buffer[BUFFER_SIZE + 1];
+    switch (app_status) {
+    case 1:
+        while (1) {
+            while (fifo >= 0 && (n = read(fifo, buffer, BUFFER_SIZE)) > 0) {
+                buffer[n] = '\0';
+                fputs(buffer, out);
+                message_size += n;
+            }
+            if (n < 0 && errno == EINTR) {
+                if (app_status == 3) {
+                    fprintf(out, "eho server working\n");
+                    app_status = 0;
+                } else if (app_status == 4) {
+                    print_stats(out);
+                    app_status = 0;
+                } else if (app_status == 5) {
+                    demonize(cfg, out);
+                    app_status = 0;
+                }
+            } else break;
+        }
+        fprintf(out, "got sigint\n");
+        break;
+    case 2:
+        fprintf(out, "got sigterm\n");
+        break;
+    }
+    print_stats(out);
+    if (unlink(fifo_name) != 0) exit(1);
+}
+
+int main(int argc, char* argv[]) {
+    struct config cfg;
+    int status = read_config(&cfg, argc, argv);
+    if (status != 0) {
+        print_help(stderr);
+        exit(1);
+    }
+
+    int fifo_status = setup_fifo(cfg.fifo_name);
     if (fifo_status != 0) exit(fifo_status);
 
     FILE* out = NULL;
-    if (cfg->type == demon) {
-        init_demon_out(cfg, &out);
+    if (cfg.type == demon) {
+        init_demon_out(&cfg, &out);
         create_demon(out);
     } else out = stdout;
 
-    struct sigaction sa;
-    sa.sa_handler = signal_handler;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
-
+    struct sigaction sa = {.sa_handler = signal_handler};
+    struct sigaction sa_ignore = {.sa_handler = SIG_IGN};
     if (sigaction(SIGTERM, &sa, NULL) != 0) {
         fprintf(out, "failed to register sigterm handler: %s\n", strerror(errno));
         exit(1);
@@ -244,7 +281,7 @@ int main(int argc, char* argv[]) {
         fprintf(out, "failed to register sigint handler: %s\n", strerror(errno));
         exit(1);
     }
-    if (sigaction(SIGQUIT, &sa, NULL) != 0) {
+    if (sigaction(SIGQUIT, &sa_ignore, NULL) != 0) {
         fprintf(out, "failed to register sigquit handler: %s\n", strerror(errno));
         exit(1);
     }
@@ -264,11 +301,11 @@ int main(int argc, char* argv[]) {
     alarm(ALARM_PERIOD);
 
     print_help(out);
-    char buffer[BUFFER_SIZE];
+    char buffer[BUFFER_SIZE + 1];
     int n;
     while (1) {
-        FILE* fifo = fopen(cfg->fifo_name, "r");
-        if (fifo == NULL && errno == EINTR) {
+        int fifo = open(cfg.fifo_name, O_RDONLY, 0600);
+        if (fifo < 0 && errno == EINTR) {
             if (app_status == 3) {
                 fprintf(out, "eho server working\n");
                 app_status = 0;
@@ -276,24 +313,24 @@ int main(int argc, char* argv[]) {
                 print_stats(out);
                 app_status = 0;
             } else if (app_status == 5) {
-                if (cfg->type != demon) {
-                    init_demon_out(cfg, &out);
+                if (cfg.type != demon) {
+                    init_demon_out(&cfg, &out);
                     create_demon(out);
                     fprintf(out, "sighup signal: switching to demon mode\n");
                     print_stats(out);
-                    cfg->type = demon;
+                    cfg.type = demon;
                 }
                 app_status = 0;
             } else if (app_status != 6) {
-                shutdown(fifo, cfg->fifo_name, out);
+                shutdown(fifo, cfg.fifo_name, out, &cfg);
                 break;
             }
-        } else if (fifo == NULL) {
+        } else if (fifo < 0) {
             fprintf(out, "failed to open fifo: %s\n", strerror(errno));
             exit(1);
         }
 
-        while (fifo != NULL && (n = fread(buffer, sizeof(char), BUFFER_SIZE, fifo)) > 0) {
+        while (fifo >= 0 && (n = read(fifo, buffer, BUFFER_SIZE)) > 0) {
             buffer[n] = '\0';
             fputs(buffer, out);
             message_size += n;
@@ -301,7 +338,7 @@ int main(int argc, char* argv[]) {
 
         ++message_count;
 
-        if (fifo != NULL && n < 0 && errno == EINTR) {
+        if (fifo >= 0 && n < 0 && errno == EINTR) {
             if (app_status == 3) {
                 fprintf(out, "eho server working\n");
                 app_status = 0;
@@ -309,25 +346,18 @@ int main(int argc, char* argv[]) {
                 print_stats(out);
                 app_status = 0;
             } else if (app_status == 5) {
-                if (cfg->type != demon) {
-                    init_demon_out(cfg, &out);
-                    create_demon(out);
-                    fprintf(out, "sighup signal: switching to demon mode\n");
-                    print_stats(out);
-                    cfg->type = demon;
-                }
+                demonize(&cfg, out);
                 app_status = 0;
             } else if (app_status != 6) {
-                shutdown(fifo, cfg->fifo_name, out);
+                shutdown(fifo, cfg.fifo_name, out, &cfg);
                 close_fifo(fifo, out);
                 break;
             }
         }
 
-        if (fifo != NULL) close_fifo(fifo, out);
+        if (fifo >= 0) close_fifo(fifo, out);
     }
 
     if (fclose(out) != 0) exit(1);
-    destroy_config(cfg);
     exit(0);
 }
