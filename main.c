@@ -309,13 +309,7 @@ int main(int argc, char* argv[]) {
                 print_stats(out);
                 app_status = 0;
             } else if (app_status == 5) {
-                if (cfg.type != demon) {
-                    init_demon_out(&cfg, &out);
-                    create_demon(out);
-                    fprintf(out, "sighup signal: switching to demon mode\n");
-                    print_stats(out);
-                    cfg.type = demon;
-                }
+                demonize(&cfg, out);
                 app_status = 0;
             } else if (app_status != 6) {
                 shutdown(fifo, cfg.fifo_name, out, &cfg);
