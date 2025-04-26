@@ -97,19 +97,15 @@ int read_config(struct config* cfg, int argc, char* argv[]) {
 int setup_fifo(char* fifo_name) {
     int status = mkfifo(fifo_name, 0600);
     if (status != 0 && errno == EEXIST) {
-        struct stat* st = (struct stat*)malloc(sizeof(struct stat));
-        if (stat(fifo_name, st) != 0) {
-            free(st);
+        struct stat st;
+        if (stat(fifo_name, &st) != 0) {
             perror("stat error\n");
             return 1;
         }
-
-        if (!S_ISFIFO(st->st_mode)) {
-            free(st);
+        if (!S_ISFIFO(st.st_mode)) {
             perror("existing file is not fifo\n");
             return 1;
         }
-        free(st);
     } else if (status != 0) {
         perror("failed to create fifo\n");
         return 1;
